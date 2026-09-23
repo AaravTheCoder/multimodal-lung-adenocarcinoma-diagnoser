@@ -4,12 +4,11 @@
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white"/>
   <img src="https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white"/>
   <img src="https://img.shields.io/badge/scikit--learn-1.3+-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white"/>
-  <img src="https://img.shields.io/badge/Regeneron-STS-00A651?style=for-the-badge"/>
   <img src="https://img.shields.io/badge/Apple_Silicon-MPS-000000?style=for-the-badge&logo=apple&logoColor=white"/>
 </p>
 
 <p align="center">
-  <b>Regeneron Science Talent Search — 11th Grade Research Project</b><br>
+  <b>Aarav Kala — 11th Grade Research Project</b><br>
   A multimodal AI pipeline for binary staging of lung adenocarcinoma (LUAD) fusing CT scan imaging with RNA-seq genomic expression data across three independent clinical cohorts.
 </p>
 
