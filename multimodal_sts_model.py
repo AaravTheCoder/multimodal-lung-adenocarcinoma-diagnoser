@@ -1,21 +1,3 @@
-"""
-================================================================================
-Multimodal CT-Genomic Fusion Network for LUAD Staging — Regeneron STS
-================================================================================
-Purpose: Binary classification of lung adenocarcinoma (LUAD) pathological stage
-         (Stage I/II vs Stage III/IV) by fusing:
-         (a) a 512-dim RNA-seq genomic embedding (ComBat batch-corrected PCA),
-             pre-extracted and stored per-patient as a .pt tensor, and
-         (b) a 2D axial chest CT slice, processed through a ResNet-18 encoder
-             pretrained on 1.9M DICOM radiology images (RadiologyNET).
-         Fusion: cross-attention (v8) — 49 CT spatial tokens attend over 16 genomic
-         tokens, fusing at the patch level before mean-pooling. Dropout=0.3 on
-         attention weights regularises the 1.1M-param head for N≈160 patients.
-
-Hardware target: Apple Silicon (MPS) with CPU fallback.
-================================================================================
-"""
-
 import os
 import copy
 import warnings
@@ -43,70 +25,48 @@ import matplotlib.pyplot as plt
 # 0. GLOBAL CONFIGURATION
 # ==============================================================================
 class Config:
-    """
-    Centralized hyperparameters and paths. Keeping this as a class (rather than
-    loose module-level variables) makes the script trivially importable/testable
-    and gives you one place to point to when judges ask about your setup.
-    """
     CSV_PATH = "real_patient_data.csv"
 
-    # --- Data contract (v2) ---------------------------------------------------
-    # CSV is now expected to contain exactly these three columns:
-    #   patient_id    -- unique identifier, used to locate the .pt embedding
-    #   image_path    -- path to the fundus image file
-    #   has_condition -- binary label (0/1)
     PATIENT_ID_COLUMN = "patient_id"
     IMAGE_PATH_COLUMN = "image_path"
     LABEL_COLUMN = "has_condition"
 
-    # Directory containing one serialized tensor per patient, named
-    # "<patient_id>.pt", each holding a 1D float tensor of shape (GENOMIC_DIM,).
     EMBEDDINGS_DIR = "genomic_embeddings"
     GENOMIC_DIM = 512
 
     IMAGE_SIZE = 224
 
-    # --- Fusion / attention -----------------------------------------------------
-    EMBED_DIM = 512          # must equal ResNet-18 layer4 output channels
-    NUM_ATTENTION_HEADS = 8  # 512 / 8 = 64-dim per head, a clean split
-    NUM_GENOMIC_TOKENS = 16  # genomic vector is chunked into 16 tokens of 32 dims
+    EMBED_DIM = 512
+    NUM_ATTENTION_HEADS = 8
+    NUM_GENOMIC_TOKENS = 16
     # "attention" = cross-attention (1.1M params, needs large dataset)
     # "linear"    = concat + small MLP (~65K params, suited for <200 patients)
     FUSION_TYPE = "linear"
 
-    # --- Backbone -----------------------------------------------------------
-    FREEZE_EARLY_LAYERS = True   # freeze conv1/layer1/layer2
-    FREEZE_ALL_RESNET = True     # freeze entire ResNet on small datasets (<100 patients)
-    # RadiologyNET ResNet-18 weights (pretrained on 1.9M DICOM slices).
-    # Set to None to use ImageNet weights.
+    FREEZE_EARLY_LAYERS = True
+    FREEZE_ALL_RESNET = True
     RADIOLOGY_WEIGHTS_PATH = "ResNet18.pth"
 
     BATCH_SIZE = 16
-    NUM_WORKERS = 0  # 0 = main process only; avoids macOS shared-memory timeout with MPS
+    NUM_WORKERS = 0
     VAL_SPLIT = 0.2
     NUM_EPOCHS = 25
     LEARNING_RATE = 2e-4
     WEIGHT_DECAY = 5e-3
     SEED = 42
 
-    # Probability of randomly zeroing one modality per batch during multimodal
-    # training, forcing the fusion head to work with either modality alone.
     MODALITY_DROPOUT_P = 0.2
 
-    # Seeds for repeated k-fold CV. Add more seeds (e.g. [42, 7, 13]) to get
-    # more stable mean/std estimates at the cost of proportionally more runtime.
     CV_SEEDS = [42, 7, 13, 99, 2024]
 
-    # Per-fold PCA: post-ComBat, pre-PCA matrix saved by export_embeddings.py
     COMBAT_MATRIX_PATH = "combat_corrected_matrix.npy"
     COMBAT_PIDS_PATH   = "combat_patient_ids.npy"
-    N_PCA_COMPONENTS   = 512  # must be divisible by NUM_GENOMIC_TOKENS
+    N_PCA_COMPONENTS   = 512
 
     CHECKPOINT_PATH = "best_model.pt"
 
 
 def set_seed(seed: int) -> None:
-    """Reproducibility matters a great deal for a competition writeup."""
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.backends.mps.is_available():
@@ -114,13 +74,9 @@ def set_seed(seed: int) -> None:
 
 
 # ==============================================================================
-# 1. DEVICE CONFIGURATION (Apple Silicon MPS with CPU fallback)
+# 1. DEVICE CONFIGURATION
 # ==============================================================================
 def get_device() -> torch.device:
-    """
-    Explicitly targets Apple Silicon GPU acceleration via Metal Performance
-    Shaders (MPS). Falls back gracefully to CPU if MPS is unavailable.
-    """
     if torch.backends.mps.is_available():
         device = torch.device("mps")
         print("[Device] Apple Silicon GPU (MPS) detected. Using MPS backend.")
@@ -138,16 +94,6 @@ def get_device() -> torch.device:
 # 2. DATA PIPELINE
 # ==============================================================================
 class LUADMultimodalDataset(Dataset):
-    """
-    Custom PyTorch Dataset pairing:
-      - a 512-dim genomic embedding, loaded from '<EMBEDDINGS_DIR>/<patient_id>.pt'
-      - a 2D retinal fundus image, loaded from the 'image_path' column
-      - a binary label
-
-    All validation (schema, file existence, tensor shape) happens once in
-    __init__ so a bad row surfaces immediately rather than mid-training.
-    """
-
     def __init__(self, csv_path: str, embeddings_dir: str, transform: T.Compose,
                  genomic_override: Optional[Dict[str, torch.Tensor]] = None,
                  genomic_dim: Optional[int] = None):
@@ -162,13 +108,9 @@ class LUADMultimodalDataset(Dataset):
         self.df = pd.read_csv(csv_path)
         self.embeddings_dir = embeddings_dir
         self.transform = transform
-        self.genomic_override = genomic_override  # patient_id → tensor, computed per fold
-        # Store the expected dim as an instance attribute so DataLoader worker
-        # processes (which re-import the module) use the correct value, not the
-        # original Config.GENOMIC_DIM=512.
+        self.genomic_override = genomic_override
         self.genomic_dim = genomic_dim if genomic_dim is not None else Config.GENOMIC_DIM
 
-        # --- Schema validation -------------------------------------------------
         required_cols = [Config.PATIENT_ID_COLUMN, Config.IMAGE_PATH_COLUMN, Config.LABEL_COLUMN]
         missing = [c for c in required_cols if c not in self.df.columns]
         if missing:
@@ -176,7 +118,6 @@ class LUADMultimodalDataset(Dataset):
                 f"CSV is missing required column(s): {missing}. Expected columns: {required_cols}."
             )
 
-        # --- Resolve embedding path per row and validate existence --------------
         self.df["_embedding_path"] = self.df[Config.PATIENT_ID_COLUMN].apply(
             lambda pid: os.path.join(self.embeddings_dir, f"{pid}.pt")
         )
@@ -203,7 +144,6 @@ class LUADMultimodalDataset(Dataset):
                 "EMBEDDINGS_DIR, and that patient_id matches .pt filenames."
             )
 
-        # --- Spot-check one embedding's shape up front (fail fast, not at epoch 5) ---
         first_pid = self.df[Config.PATIENT_ID_COLUMN].iloc[0]
         if self.genomic_override is not None:
             sample_tensor = self.genomic_override[first_pid]
@@ -215,7 +155,6 @@ class LUADMultimodalDataset(Dataset):
                 f"{sample_tensor.numel()} elements; expected genomic_dim={self.genomic_dim}."
             )
 
-        # --- Label sanity check ---------------------------------------------------
         unique_labels = set(self.df[Config.LABEL_COLUMN].unique().tolist())
         if not unique_labels.issubset({0, 1}):
             raise ValueError(
@@ -229,13 +168,11 @@ class LUADMultimodalDataset(Dataset):
         return len(self.df)
 
     def get_labels(self) -> np.ndarray:
-        """Exposed so the Trainer can compute pos_weight without re-loading images."""
         return self.df[Config.LABEL_COLUMN].to_numpy()
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         row = self.df.iloc[idx]
 
-        # --- Genomic embedding: use per-fold override if available, else load .pt ---
         pid = row[Config.PATIENT_ID_COLUMN]
         if self.genomic_override is not None:
             genomic_tensor = self.genomic_override[pid].float().flatten()
@@ -251,34 +188,25 @@ class LUADMultimodalDataset(Dataset):
                 f"expected ({self.genomic_dim},)."
             )
 
-        # --- Image ---
         img_path = row[Config.IMAGE_PATH_COLUMN]
         try:
             image = Image.open(img_path).convert("RGB")
         except Exception as e:
             raise RuntimeError(f"Failed to open/decode image at '{img_path}': {e}")
-        image_tensor = self.transform(image)  # shape: (3, 224, 224)
+        image_tensor = self.transform(image)
 
-        # --- Label ---
         label = torch.tensor(row[Config.LABEL_COLUMN], dtype=torch.float32)
 
         return {
-            "genomic": genomic_tensor,             # (496,)
-            "image": image_tensor,                  # (3, 224, 224)
-            "label": label,                          # scalar
-            "patient_id": row[Config.PATIENT_ID_COLUMN],  # str, for patient-level aggregation
+            "genomic": genomic_tensor,
+            "image": image_tensor,
+            "label": label,
+            "patient_id": row[Config.PATIENT_ID_COLUMN],
         }
 
 
 def build_transforms(training: bool = False) -> T.Compose:
-    """
-    Standard torchvision preprocessing pipeline. ImageNet normalization stats
-    are now MANDATORY (not just convenient) because the CNN encoder is a
-    pretrained ResNet-18 -- feeding it inputs on a different numeric scale
-    than it was trained on would badly degrade the transferred features.
-    Training augmentations (flip, rotation, brightness) reduce overfitting
-    on the small 29-patient cohort.
-    """
+    # ImageNet normalization is required because the encoder is a pretrained ResNet-18.
     if training:
         return T.Compose([
             T.Resize((Config.IMAGE_SIZE, Config.IMAGE_SIZE)),
@@ -304,9 +232,7 @@ def _get_cohort(pid: str) -> str:
 
 
 def build_kfold_splits(n_folds: int = 5, seed: int = Config.SEED):
-    """Patient-level stratified k-fold splits, stratified by BOTH label AND cohort
-    so every fold has a representative mix of TCGA/CPTAC/Stanford patients.
-    Returns (splits, df) where splits is a list of (train_patient_set, val_patient_set)."""
+    """Patient-level stratified k-fold splits, stratified by label AND cohort."""
     df = pd.read_csv(Config.CSV_PATH)
 
     label_counts = df.groupby(Config.PATIENT_ID_COLUMN)[Config.LABEL_COLUMN].nunique()
@@ -316,9 +242,6 @@ def build_kfold_splits(n_folds: int = 5, seed: int = Config.SEED):
 
     patient_labels = df.groupby(Config.PATIENT_ID_COLUMN)[Config.LABEL_COLUMN].first()
 
-    # Group patients by (cohort, label) — 6 strata — then distribute each
-    # stratum evenly across folds. This prevents scanner-shift collapse where
-    # one fold accidentally contains only patients from one cohort.
     strata: Dict[str, list] = {}
     for pid, label in patient_labels.items():
         key = f"{_get_cohort(pid)}_{int(label)}"
@@ -328,7 +251,6 @@ def build_kfold_splits(n_folds: int = 5, seed: int = Config.SEED):
     for key in strata:
         rng.shuffle(strata[key])
 
-    # Distribute each stratum into n_folds buckets round-robin
     fold_buckets: List[list] = [[] for _ in range(n_folds)]
     for key, pids in strata.items():
         sub_folds = [list(a) for a in np.array_split(pids, n_folds)]
@@ -357,13 +279,8 @@ def build_kfold_splits(n_folds: int = 5, seed: int = Config.SEED):
 
 
 def compute_fold_genomics(train_pids, val_pids) -> Optional[Dict[str, torch.Tensor]]:
-    """Fit PCA on all RNA-seq patients EXCEPT val CT patients; transform all.
-
-    Fitting on ~490 patients (520 total minus ~30 val CT patients) gives ~480
-    components — close to 512 but without leaking val gene expression into the
-    PCA axes. Config.GENOMIC_DIM is updated in-place on the first call so the
-    model is built with the correct input dimension.
-    """
+    """Fit PCA on train patients only (excluding val), then transform all patients.
+    Prevents val gene expression from leaking into PCA axes."""
     if not os.path.exists(Config.COMBAT_MATRIX_PATH):
         warnings.warn(
             f"[Per-fold PCA] '{Config.COMBAT_MATRIX_PATH}' not found. "
@@ -375,7 +292,6 @@ def compute_fold_genomics(train_pids, val_pids) -> Optional[Dict[str, torch.Tens
     pids_all = np.load(Config.COMBAT_PIDS_PATH, allow_pickle=True).tolist()
     pid_to_idx = {p: i for i, p in enumerate(pids_all)}
 
-    # Exclude val CT patients from PCA fitting; all other RNA-seq patients are safe.
     val_pid_set = set(val_pids)
     fit_idx = [pid_to_idx[p] for p in pids_all if p not in val_pid_set]
     if len(fit_idx) == 0:
@@ -385,7 +301,6 @@ def compute_fold_genomics(train_pids, val_pids) -> Optional[Dict[str, torch.Tens
     n_comp = min(Config.N_PCA_COMPONENTS, len(fit_idx) - 1, X_all.shape[1])
     n_comp = (n_comp // Config.NUM_GENOMIC_TOKENS) * Config.NUM_GENOMIC_TOKENS
 
-    # Update Config.GENOMIC_DIM so models built in this run use the right dim.
     if Config.GENOMIC_DIM != n_comp:
         Config.GENOMIC_DIM = n_comp
 
@@ -409,11 +324,7 @@ def compute_fold_genomics(train_pids, val_pids) -> Optional[Dict[str, torch.Tens
 
 
 def build_dataloaders() -> Tuple[DataLoader, DataLoader, Subset, Subset]:
-    """Patient-level train/val split: all slices from a patient stay together
-    in one split. This prevents data leakage from multi-slice patients.
-    Training split uses augmentation; validation uses clean transforms only.
-    """
-    # Stratified patient-level split: ensure both classes appear in validation
+    """Patient-level train/val split to prevent data leakage from multi-slice patients."""
     df = pd.read_csv(Config.CSV_PATH)
     patient_labels = df.groupby(Config.PATIENT_ID_COLUMN)[Config.LABEL_COLUMN].first()
 
@@ -424,7 +335,6 @@ def build_dataloaders() -> Tuple[DataLoader, DataLoader, Subset, Subset]:
     rng.shuffle(pos_patients)
     rng.shuffle(neg_patients)
 
-    # Put at least 1 positive and proportional negatives in validation
     n_val_pos = max(1, int(len(pos_patients) * Config.VAL_SPLIT))
     n_val_neg = max(1, int(len(neg_patients) * Config.VAL_SPLIT))
 
@@ -456,12 +366,7 @@ def build_dataloaders() -> Tuple[DataLoader, DataLoader, Subset, Subset]:
 
 
 def compute_pos_weight(train_subset: Subset) -> torch.Tensor:
-    """
-    Computes the positive-class weight for BCEWithLogitsLoss as
-    (# negative samples / # positive samples), calculated STRICTLY on the
-    training split to avoid any validation-set leakage into the loss
-    function. A value > 1 up-weights the positive (presumably rarer) class.
-    """
+    """Computes neg/pos ratio from the training split only to avoid label leakage."""
     full_dataset: LUADMultimodalDataset = train_subset.dataset
     all_labels = full_dataset.get_labels()
     train_labels = all_labels[train_subset.indices]
@@ -478,8 +383,6 @@ def compute_pos_weight(train_subset: Subset) -> torch.Tensor:
     return torch.tensor([pos_weight_value], dtype=torch.float32)
 
 
-# Backward-compat alias so DataLoader multiprocessing workers can unpickle
-# datasets that were created before the class rename.
 RetinalGenomicDataset = LUADMultimodalDataset
 
 
@@ -488,19 +391,9 @@ RetinalGenomicDataset = LUADMultimodalDataset
 # ==============================================================================
 class ResNetImageEncoder(nn.Module):
     """
-    Feature Extractor A: pretrained ResNet-18 trunk, truncated before the
-    global average pool / fc layer, so we retain the SPATIAL feature map
-    (B, 512, 7, 7) at 224x224 input resolution. This spatial map serves two
-    purposes:
-      1. Flattened into 49 tokens of dim 512, it becomes the query sequence
-         for cross-attention against the genomic tokens.
-      2. It is the natural target for Grad-CAM, since Grad-CAM fundamentally
-         requires a spatial (not globally-pooled) activation map.
-
-    Early layers are optionally frozen (Config.FREEZE_EARLY_LAYERS) since
-    low-level ImageNet features (edges, color blobs, textures) transfer well
-    to medical images and freezing them is a standard, defensible way to
-    reduce overfitting on a small labeled fundus dataset.
+    ResNet-18 trunk truncated before avgpool/fc, returning the spatial feature
+    map (B, 512, 7, 7). Retaining spatial structure enables Grad-CAM and
+    serves as the query sequence for cross-attention fusion.
     """
 
     def __init__(self, freeze_early_layers: bool = True):
@@ -511,9 +404,7 @@ class ResNetImageEncoder(nn.Module):
             backbone = resnet18(weights=None)
             ckpt = torch.load(radnet_path, map_location="cpu", weights_only=False)
             state = ckpt["model_state"]
-            # Strip the 'model.' prefix added by their training wrapper
             state = {k.replace("model.", "", 1): v for k, v in state.items()}
-            # Remove FC head — their 36-class output doesn't match torchvision's 1000
             state = {k: v for k, v in state.items() if not k.startswith("fc.")}
             missing, unexpected = backbone.load_state_dict(state, strict=False)
             print(f"  [OK] Loaded. Only FC re-initialized (expected): {missing}")
@@ -522,15 +413,13 @@ class ResNetImageEncoder(nn.Module):
                 print(f"[Model] '{radnet_path}' not found — using ImageNet weights.")
             backbone = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
 
-        # Keep everything up through layer4; drop avgpool + fc (the original
-        # 1000-way ImageNet classifier head, which we have no use for).
         self.stem = nn.Sequential(
             backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool
         )
         self.layer1 = backbone.layer1
         self.layer2 = backbone.layer2
         self.layer3 = backbone.layer3
-        self.layer4 = backbone.layer4  # output: (B, 512, 7, 7) for 224x224 input
+        self.layer4 = backbone.layer4
 
         if Config.FREEZE_ALL_RESNET:
             for param in backbone.parameters():
@@ -544,7 +433,6 @@ class ResNetImageEncoder(nn.Module):
             print("[Model] Froze ResNet-18 stem/layer1/layer2 (transfer-learning mode). "
                   "layer3 and layer4 remain trainable.")
 
-        # Storage for Grad-CAM hooks.
         self.last_conv_activations: Optional[torch.Tensor] = None
         self.last_conv_gradients: Optional[torch.Tensor] = None
 
@@ -555,18 +443,11 @@ class ResNetImageEncoder(nn.Module):
         self.last_conv_gradients = grad_output[0]
 
     def register_gradcam_hooks(self):
-        """
-        Attaches forward/backward hooks to the output of layer4 -- the final
-        convolutional block of the ResNet-18 trunk -- for Grad-CAM saliency.
-        This is the standard Grad-CAM target layer choice for ResNet
-        architectures, since it's the last layer with meaningful spatial
-        resolution before any pooling/flattening occurs.
-        """
+        """Attach forward/backward hooks to layer4 for Grad-CAM saliency."""
         self.layer4.register_forward_hook(self._save_activations_hook)
         self.layer4.register_full_backward_hook(self._save_gradients_hook)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Returns the raw spatial feature map (B, 512, 7, 7)."""
         x = self.stem(x)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -577,19 +458,10 @@ class ResNetImageEncoder(nn.Module):
 
 class GenomicTokenizer(nn.Module):
     """
-    Converts a single 512-dim genomic embedding into a SEQUENCE of tokens,
-    analogous to how a Vision Transformer splits an image into patches.
-
-    Without this, a single 512-dim vector would be exactly one key/value
-    token, and attention over a single token is mathematically trivial
-    (softmax of one score is always 1.0) -- which produces no usable
-    attention pattern for explainability. By chunking the vector into
-    NUM_GENOMIC_TOKENS sub-embeddings and projecting each into EMBED_DIM
-    space with a SHARED linear layer, we get a genuine (B, num_tokens,
-    embed_dim) sequence that the image tokens can attend to non-trivially,
-    and the resulting per-token attention weights are directly interpretable
-    as "which chunk of the genomic embedding mattered for this image
-    region."
+    Splits the genomic embedding into NUM_GENOMIC_TOKENS chunks and projects
+    each to embed_dim, producing a sequence the image tokens can attend over.
+    A shared linear projection with learned positional embeddings mirrors
+    the ViT patch-embedding design.
     """
 
     def __init__(self, genomic_dim: int = None,
@@ -605,14 +477,7 @@ class GenomicTokenizer(nn.Module):
             )
         self.num_tokens = num_tokens
         self.chunk_size = genomic_dim // num_tokens
-
-        # Shared projection applied independently to each chunk (weight-tying
-        # keeps the parameter count small and mirrors ViT's patch embedding).
         self.token_proj = nn.Linear(self.chunk_size, embed_dim)
-
-        # Learned positional embeddings so the model can distinguish "chunk 0"
-        # (e.g. the first 32 dims of the genomic embedding) from "chunk 15",
-        # since a Linear layer alone is permutation-agnostic across chunks.
         self.positional_embedding = nn.Parameter(torch.randn(1, num_tokens, embed_dim) * 0.02)
 
     def forward(self, genomic: torch.Tensor) -> torch.Tensor:
@@ -621,24 +486,17 @@ class GenomicTokenizer(nn.Module):
         returns: (B, num_tokens, embed_dim)
         """
         B = genomic.shape[0]
-        chunks = genomic.view(B, self.num_tokens, self.chunk_size)  # (B, 16, 32)
-        tokens = self.token_proj(chunks)                              # (B, 16, embed_dim)
+        chunks = genomic.view(B, self.num_tokens, self.chunk_size)
+        tokens = self.token_proj(chunks)
         tokens = tokens + self.positional_embedding
         return tokens
 
 
 class CrossAttentionFusion(nn.Module):
     """
-    Fusion Layer: a genuine multi-head cross-attention block built on
-    nn.MultiheadAttention. Image spatial tokens (queries) attend over
-    genomic sub-embedding tokens (keys/values), producing:
-      - fused image tokens, informed by genomic context
-      - a real (B, num_heads-averaged, 49, 16) attention weight tensor,
-        which is a first-class explainability artifact: for each retinal
-        patch, which genomic components did the model weight most heavily.
-
-    A residual connection + LayerNorm around the attention block follows
-    standard Transformer design, stabilizing training.
+    Multi-head cross-attention: image tokens (queries) attend over genomic
+    tokens (keys/values). Returns fused tokens and per-patch attention weights
+    usable for explainability.
     """
 
     def __init__(self, embed_dim: int = Config.EMBED_DIM,
@@ -656,30 +514,29 @@ class CrossAttentionFusion(nn.Module):
         genomic_tokens: (B, 16, embed_dim)  -- keys and values
 
         Returns:
-          fused_tokens:     (B, 49, embed_dim) -- attended, residual-added, normed
-          attn_weights:      (B, 49, 16)        -- averaged over heads (interpretable)
+          fused_tokens:  (B, 49, embed_dim)
+          attn_weights:  (B, 49, 16) averaged over heads
         """
         attended, attn_weights = self.mha(
             query=image_tokens, key=genomic_tokens, value=genomic_tokens,
             need_weights=True, average_attn_weights=True,
         )
-        fused_tokens = self.norm(image_tokens + attended)  # residual connection
+        fused_tokens = self.norm(image_tokens + attended)
         return fused_tokens, attn_weights
 
 
 class MultimodalFusionNet(nn.Module):
     """
-    Full hybrid architecture:
-        Image  -> ResNetImageEncoder -> spatial feats (B,512,7,7)
-                                      -> flatten -> image tokens (B,49,512)
-        Genomic (512-d) -> GenomicTokenizer -> genomic tokens (B,16,512)
-                                                          |
-                                                          v
-                        CrossAttentionFusion (MultiheadAttention) -> fused tokens (B,49,512)
-                                                          v
-                                     mean-pool over tokens -> (B,512)
-                                                          v
-                                   Classification MLP Head -> logit
+    Image -> ResNetImageEncoder -> (B,512,7,7)
+    Genomic (512-d) -> GenomicTokenizer -> (B,16,512)
+                                             |
+                              CrossAttentionFusion -> fused tokens (B,49,512)
+                                             |
+                                        mean-pool -> (B,512)
+                                             |
+                                    MLP classifier -> logit
+    Linear fusion mode skips the tokenizer and cross-attention, instead
+    concatenating mean-pooled image features with the raw genomic vector.
     """
 
     def __init__(self,
@@ -687,14 +544,12 @@ class MultimodalFusionNet(nn.Module):
                  embed_dim: int = Config.EMBED_DIM):
         super().__init__()
         if genomic_dim is None:
-            genomic_dim = Config.GENOMIC_DIM  # read at construction time, not import time
+            genomic_dim = Config.GENOMIC_DIM
         self.fusion_type = Config.FUSION_TYPE
         self.image_encoder = ResNetImageEncoder(freeze_early_layers=Config.FREEZE_EARLY_LAYERS)
 
         if self.fusion_type == "linear":
-            # Simple concat fusion: mean-pooled image (512) + genomic (496) → MLP
-            # ~65K trainable params — appropriate for datasets < 300 patients.
-            concat_dim = embed_dim + genomic_dim  # 512 + 512 = 1024
+            concat_dim = embed_dim + genomic_dim
             self.classifier = nn.Sequential(
                 nn.Linear(concat_dim, 64),
                 nn.ReLU(inplace=True),
@@ -703,7 +558,6 @@ class MultimodalFusionNet(nn.Module):
             )
             print(f"[Model] Fusion: LINEAR concat ({concat_dim}→64→1, ~{concat_dim*64+64+65:,} trainable params in head)")
         else:
-            # Cross-attention fusion: powerful but needs > ~500 paired samples.
             self.genomic_tokenizer = GenomicTokenizer(genomic_dim=genomic_dim, embed_dim=embed_dim)
             self.fusion = CrossAttentionFusion(embed_dim=embed_dim)
             self.classifier = nn.Sequential(
@@ -720,25 +574,23 @@ class MultimodalFusionNet(nn.Module):
                 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Returns:
-          logit:        (B, 1)   raw pre-sigmoid output
+          logit:        (B, 1)
           attn_weights: (B, 49, 16) for cross-attention mode; None for linear mode
         """
         genomic = genomic.clone().requires_grad_(True)
         self._genomic_input_ref = genomic
 
-        # --- Image branch: ResNet feature map → mean pool → (B, 512) ---
-        feature_map = self.image_encoder(image)          # (B, 512, 7, 7)
-        image_vec = feature_map.mean(dim=[2, 3])         # (B, 512)
+        feature_map = self.image_encoder(image)
+        image_vec = feature_map.mean(dim=[2, 3])
 
         if self.fusion_type == "linear":
-            # Concatenate image vector and raw genomic embedding, classify.
-            fused = torch.cat([image_vec, genomic], dim=1)  # (B, 1024)
-            logit = self.classifier(fused)                   # (B, 1)
+            fused = torch.cat([image_vec, genomic], dim=1)
+            logit = self.classifier(fused)
             return logit, None
         else:
             B, C, H, W = feature_map.shape
-            image_tokens = feature_map.flatten(2).transpose(1, 2)  # (B, 49, 512)
-            genomic_tokens = self.genomic_tokenizer(genomic)        # (B, 16, 512)
+            image_tokens = feature_map.flatten(2).transpose(1, 2)
+            genomic_tokens = self.genomic_tokenizer(genomic)
             fused_tokens, attn_weights = self.fusion(image_tokens, genomic_tokens)
             pooled = fused_tokens.mean(dim=1)
             logit = self.classifier(pooled)
@@ -749,25 +601,12 @@ class MultimodalFusionNet(nn.Module):
 # 4. TRAINING / VALIDATION LOOP
 # ==============================================================================
 class Trainer:
-    """
-    Encapsulates the full training regimen: optimizer, loss (with explicit
-    class-imbalance correction via pos_weight), per-epoch loops, metric
-    tracking (loss, accuracy, ROC-AUC), and checkpointing of the best
-    validation model.
-    """
-
     def __init__(self, model: nn.Module, device: torch.device, pos_weight: torch.Tensor):
         self.model = model.to(device)
         self.device = device
 
-        # pos_weight up-weights the positive class in the loss in proportion
-        # to its rarity in the TRAINING split (computed by compute_pos_weight).
-        # This directly counteracts class imbalance without resampling or
-        # duplicating data, and keeps ROC-AUC/accuracy comparisons clean.
         self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
 
-        # Only pass parameters that actually require grad (relevant now that
-        # early ResNet layers may be frozen) to the optimizer.
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(
             trainable_params, lr=Config.LEARNING_RATE, weight_decay=Config.WEIGHT_DECAY,
@@ -805,21 +644,20 @@ class Trainer:
                 elif mode == "genomic_only":
                     images = torch.zeros_like(images)
                 elif mode == "multimodal" and training:
-                    # Modality dropout: randomly zero one modality per batch
                     r = torch.rand(1).item()
                     if r < Config.MODALITY_DROPOUT_P / 2:
                         genomics = torch.zeros_like(genomics)
                     elif r < Config.MODALITY_DROPOUT_P:
                         images = torch.zeros_like(images)
 
-                logits, _ = self.model(images, genomics)  # (B, 1)
-                logits_flat = logits.squeeze(1)            # (B,)
+                logits, _ = self.model(images, genomics)
+                logits_flat = logits.squeeze(1)
 
                 for i, pid in enumerate(pids):
                     patient_logits[pid].append(logits_flat[i])
                     patient_labels[pid] = labels[i].item()
 
-            # --- Patient-level loss & update (one gradient step per epoch) --------
+            # One gradient step per epoch, computed at patient level
             if training:
                 self.optimizer.zero_grad()
                 pat_logits_list, pat_labels_list = [], []
@@ -844,7 +682,6 @@ class Trainer:
                 with torch.no_grad():
                     loss = self.criterion(dummy_logits, dummy_labels)
 
-        # --- Metrics at patient level -------------------------------------------
         avg_loss = loss.item()
         all_probs  = [torch.sigmoid(torch.tensor(v)).item() for v in pat_logits_list] \
                      if not training else \
@@ -938,21 +775,11 @@ class Trainer:
 # ==============================================================================
 class Explainer:
     """
-    Produces three complementary explainability artifacts for a single sample:
-
-    1. Grad-CAM saliency on the ResNet-18 layer4 feature map: which pixels in
-       the retinal image most increased the model's predicted probability of
-       the positive class.
-
-    2. Genomic attribution (gradient x input) on the raw 512-dim embedding:
-       which dimensions of the ORIGINAL genomic vector most influenced the
-       logit, weighted by their own magnitude.
-
-    3. The genuine multi-head cross-attention map (B, 49, 16): aggregated
-       (mean over the 49 image-patch queries) into a (16,) distribution
-       showing which genomic TOKENS (sub-embedding chunks) the retinal
-       image attended to most heavily overall. Unlike the v1 scalar gate,
-       this is a non-trivial, learned distribution.
+    Produces three explainability artifacts for a single sample:
+      1. Grad-CAM on ResNet-18 layer4 — spatial saliency over the input image.
+      2. Gradient x input on the raw genomic embedding — per-dimension attribution.
+      3. Genomic token attention — which genomic chunks the image attended to most.
+         In linear fusion mode this falls back to grouped gradient x input attribution.
     """
 
     def __init__(self, model: MultimodalFusionNet, device: torch.device):
@@ -963,16 +790,15 @@ class Explainer:
     def explain_sample(self, image: torch.Tensor, genomic: torch.Tensor
                         ) -> Dict[str, np.ndarray]:
         """
-        image:   (1, 3, 224, 224) single-sample batch
-        genomic: (1, 512) single-sample batch
+        image:   (1, 3, 224, 224)
+        genomic: (1, 512)
         """
         self.model.eval()
         image = image.to(self.device)
         genomic = genomic.to(self.device)
 
-        # Temporarily enable grad on layer4 so the backward hook fires even
-        # when FREEZE_ALL_RESNET=True (frozen params have requires_grad=False,
-        # which silences the backward hook on layer4).
+        # Temporarily enable grad on layer4 so backward hooks fire even when
+        # FREEZE_ALL_RESNET=True (frozen params have requires_grad=False).
         layer4_params = list(self.model.image_encoder.layer4.parameters())
         prev_requires_grad = [p.requires_grad for p in layer4_params]
         for p in layer4_params:
@@ -984,16 +810,14 @@ class Explainer:
             self.model.zero_grad()
             logit.backward()
 
-        # Restore frozen state
         for p, prev in zip(layer4_params, prev_requires_grad):
             p.requires_grad_(prev)
 
-        # --- 1. Grad-CAM for the image -----------------------------------------
-        activations = self.model.image_encoder.last_conv_activations  # (1,512,7,7)
-        gradients = self.model.image_encoder.last_conv_gradients      # (1,512,7,7)
+        activations = self.model.image_encoder.last_conv_activations
+        gradients = self.model.image_encoder.last_conv_gradients
 
-        weights = gradients.mean(dim=(2, 3), keepdim=True)            # (1,512,1,1)
-        cam = (weights * activations).sum(dim=1, keepdim=True)        # (1,1,7,7)
+        weights = gradients.mean(dim=(2, 3), keepdim=True)
+        cam = (weights * activations).sum(dim=1, keepdim=True)
         cam = F.relu(cam)
         cam = F.interpolate(cam, size=(Config.IMAGE_SIZE, Config.IMAGE_SIZE),
                              mode="bilinear", align_corners=False)
@@ -1001,19 +825,14 @@ class Explainer:
         if cam.max() > 0:
             cam = cam / cam.max()
 
-        # --- 2. Genomic attribution (gradient x input) --------------------------
         genomic_grad = self.model._genomic_input_ref.grad.detach().cpu().numpy().flatten()
         genomic_value = genomic.detach().cpu().numpy().flatten()
-        genomic_attribution = genomic_grad * genomic_value  # (512,)
+        genomic_attribution = genomic_grad * genomic_value
 
-        # --- 3. Token-level genomic attribution -----------------------------------
-        # Cross-attention mode: use actual attention weights.
-        # Linear fusion mode: group gradient×input attribution into NUM_GENOMIC_TOKENS
-        # bins so panel 4 always shows a real signal (not zeros).
         if attn_weights is not None:
             token_attention = attn_weights.squeeze(0).mean(dim=0).detach().cpu().numpy()
         else:
-            # Sum absolute attribution within each token-sized chunk (32 dims each)
+            # Linear fusion mode: group gradient×input attribution into token-sized bins
             abs_attr = np.abs(genomic_attribution)
             chunk = Config.GENOMIC_DIM // Config.NUM_GENOMIC_TOKENS
             token_attention = abs_attr.reshape(Config.NUM_GENOMIC_TOKENS, chunk).sum(axis=1)
@@ -1029,7 +848,6 @@ class Explainer:
 
     def visualize(self, original_image_pil: Image.Image, explanation: Dict,
                    top_k_genes: int = 10, save_path: str = "explanation.png") -> None:
-        """Renders a judge-friendly explainability figure with 4 panels."""
         fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
         axes[0].imshow(original_image_pil)
@@ -1070,17 +888,15 @@ class Explainer:
 # 6. MAIN ENTRY POINT — 5-Fold Stratified CV + Ablation Study
 # ==============================================================================
 def run_cv_mode(mode: str, splits, df, device) -> List[float]:
-    """Run 5-fold CV for one ablation mode. Returns list of per-fold val AUCs."""
+    """Run 5-fold CV for one ablation mode. Returns per-fold val AUCs."""
     fold_aucs = []
 
     for fold_idx, (train_patients, val_patients) in enumerate(splits):
         print(f"\n--- Fold {fold_idx+1}/{len(splits)}  [{mode}] ---")
 
-        # Per-fold PCA: fit on all RNA-seq patients except val CT patients.
-        # Falls back to pre-exported .pt files if combat matrix not available.
         genomic_override = compute_fold_genomics(train_patients, val_patients)
 
-        fold_genomic_dim = Config.GENOMIC_DIM  # captured after per-fold PCA updated it
+        fold_genomic_dim = Config.GENOMIC_DIM
         train_dataset = LUADMultimodalDataset(
             Config.CSV_PATH, Config.EMBEDDINGS_DIR, build_transforms(training=True),
             genomic_override=genomic_override, genomic_dim=fold_genomic_dim)
@@ -1095,7 +911,6 @@ def run_cv_mode(mode: str, splits, df, device) -> List[float]:
         train_ds = Subset(train_dataset, train_indices)
         val_ds   = Subset(val_dataset,   val_indices)
 
-        # pos_weight from training split only (no leakage)
         all_labels   = train_dataset.get_labels()
         train_labels = all_labels[train_indices]
         n_pos = int((train_labels == 1).sum())
@@ -1115,10 +930,8 @@ def run_cv_mode(mode: str, splits, df, device) -> List[float]:
         fold_aucs.append(trainer.best_val_auc)
         print(f"Fold {fold_idx+1} best AUC: {trainer.best_val_auc:.4f}")
 
-        # Save best model from fold 1 multimodal for explainability
         if fold_idx == 0 and mode == "multimodal":
             torch.save(trainer.model.state_dict(), Config.CHECKPOINT_PATH)
-            # Run XAI on one validation sample
             try:
                 explainer = Explainer(trainer.model, device)
                 sample_batch = next(iter(val_loader))
@@ -1146,9 +959,6 @@ def main():
     print(f"[Model] Total parameters: {n_total:,} | Trainable: {n_trainable:,}")
     del _model
 
-    # Repeated k-fold CV: run full ablation for each seed and aggregate.
-    # CV_SEEDS = [42] gives one run (same as before). Add more seeds for
-    # more stable estimates: [42, 7, 13] gives 15 AUC values per mode.
     all_seed_results: Dict[str, Dict] = {
         m: {"all_aucs": []} for m in ["multimodal", "image_only", "genomic_only"]
     }
@@ -1171,7 +981,6 @@ def main():
                 [a for a in aucs if not np.isnan(a)]
             )
 
-    # ── Final summary across all seeds × folds ───────────────────────────────
     n_seeds = len(Config.CV_SEEDS)
     n_folds = 5
     print(f"\n{'='*70}")
