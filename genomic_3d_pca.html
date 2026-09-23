@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>LUAD Genomic PCA — 3D</title>
+<style>
+  body { margin:0; background:#0f1117; color:#eee; font-family:sans-serif; }
+  canvas { display:block; }
+  #info { position:absolute; top:10px; left:10px; font-size:13px; }
+  #tooltip { position:absolute; display:none; background:rgba(0,0,0,0.8);
+              padding:6px 10px; border-radius:6px; font-size:12px; pointer-events:none; }
+  #legend { position:absolute; bottom:20px; left:20px; font-size:12px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info">
+  <b>LUAD Patients — RNA-seq PCA Space</b><br>
+  <span style="color:#aaa">Drag to rotate · Scroll to zoom</span><br>
+  PC1 10.1%  PC2 8.3%  PC3 5.5%
+</div>
+<div id="tooltip"></div>
+<div id="legend">
+  <span class="dot" style="background:#3498db"></span>Stage I/II (early)&nbsp;&nbsp;
+  <span class="dot" style="background:#e74c3c"></span>Stage III/IV (late)
+</div>
+<script>
+const pts = [{"x": -17.1785, "y": 7.397, "z": -9.4046, "label": 0, "cohort": "CPTAC", "pid": "C3L-01924"}, {"x": -43.7895, "y": 24.2117, "z": 1.5258, "label": 0, "cohort": "CPTAC", "pid": "C3N-03764"}, {"x": 0.9125, "y": 2.1136, "z": -13.9921, "label": 0, "cohort": "CPTAC", "pid": "C3L-02513"}, {"x": 8.4328, "y": 9.2196, "z": -2.8058, "label": 1, "cohort": "CPTAC", "pid": "C3N-02715"}, {"x": -3.2489, "y": 9.8621, "z": -13.2306, "label": 0, "cohort": "CPTAC", "pid": "C3L-03642"}, {"x": -73.5054, "y": -13.979, "z": -3.6668, "label": 0, "cohort": "TCGA", "pid": "TCGA-J2-8192"}, {"x": -42.7455, "y": -12.9802, "z": 27.4439, "label": 0, "cohort": "TCGA", "pid": "TCGA-38-4626"}, {"x": 49.1683, "y": 0.6152, "z": 13.1685, "label": 0, "cohort": "CPTAC", "pid": "C3N-03911"}, {"x": -13.7512, "y": 61.3249, "z": -33.7041, "label": 0, "cohort": "CPTAC", "pid": "C3N-00294"}, {"x": -29.2195, "y": 31.0721, "z": 11.8312, "label": 0, "cohort": "TCGA", "pid": "TCGA-50-6673"}, {"x": 45.1281, "y": 7.144, "z": -19.3121, "label": 0, "cohort": "CPTAC", "pid": "C3N-02451"}, {"x": -49.33, "y": -32.086, "z": 3.0713, "label": 0, "cohort": "CPTAC", "pid": "C3L-00422"}, {"x": -97.3766, "y": -7.6213, "z": 1.332, "label": 0, "cohort": "CPTAC", "pid": "C3N-02290"}, {"x": -8.8669, "y": -61.3259, "z": 43.5766, "label": 0, "cohort": "CPTAC", "pid": "C3N-00738"}, {"x": 17.7805, "y": 20.9545, "z": -33.0873, "label": 0, "cohort": "CPTAC", "pid": "C3L-03721"}, {"x": 5.0265, "y": 27.7026, "z": -19.6152, "label": 0, "cohort": "CPTAC", "pid": "C3N-00704"}, {"x": -48.2696, "y": -19.877, "z": -14.8464, "label": 1, "cohort": "TCGA", "pid": "TCGA-50-5051"}, {"x": 11.5456, "y": -0.2623, "z": 14.8018, "label": 0, "cohort": "CPTAC", "pid": "C3N-00959"}, {"x": -68.1806, "y": -13.4532, "z": 16.0623, "label": 0, "cohort": "TCGA", "pid": "TCGA-38-4625"}, {"x": -53.1325, "y": -18.0657, "z": 3.0212, "label": 0, "cohort": "TCGA", "pid": "TCGA-38-A44F"}, {"x": -30.9979, "y": 20.1563, "z": -5.9875, "label": 0, "cohort": "TCGA", "pid": "TCGA-38-6178"}, {"x": -10.5195, "y": 27.9429, "z": -5.2845, "label": 0, "cohort": "TCGA", "pid": "TCGA-50-5066"}, {"x": 32.0133, "y": 5.7615, "z": -4.6563, "label": 1, "cohort": "CPTAC", "pid": "C3L-02515"}, {"x": 33.6104, "y": 6.6188, "z": -30.4131, "label": 0, "cohort": "CPTAC", "pid": "C3N-01799"}, {"x": 22.0462, "y": 0.9426, "z": 28.3174, "label": 0, "cohort": "CPTAC", "pid": "C3N-02948"}, {"x": 6.5093, "y": 3.621, "z": 1.3161, "label": 0, "cohort": "TCGA", "pid": "TCGA-J2-A4AD"}, {"x": 59.409, "y": -12.1756, "z": -1.7052, "label": 0, "cohort": "TCGA", "pid": "TCGA-J2-A4AE"}, {"x": 78.0654, "y": -32.167, "z": 26.7385, "label": 0, "cohort": "TCGA", "pid": "TCGA-50-5946"}, {"x": -56.3412, "y": -37.4049, "z": 2.5197, "label": 0, "cohort": "TCGA", "pid": "TCGA-50-5936"}, {"x": -61.2965, "y": -5.5878, "z": 15.0891, "label": 0, "cohort": "TCGA", "pid": "TCGA-50-6594"}, {"x": 52.6668, "y": 82.0125, "z": -38.2465, "label": 0, "cohort": "CPTAC", "pid": "C3N-04382"}, {"x": 49.4, "y": 29.2436, "z": -28.8623, "label": 0, "cohort": "CPTAC", "pid": "C3N-00293"}, {"x": 48.1848, "y": -22.4868, "z": -3.2659, "label": 0, "cohort": "CPTAC", "pid": "C3L-03717"}, {"x": 101.2571, "y": -130.8604, "z": -175.931, "label": 0, "cohort": "TCGA", "pid": "TCGA-50-8460"}, {"x": -29.989, "y": 68.0499, "z": -19.8256, "label": 0, "cohort": "TCGA", "pid": "TCGA-50-8459"}, {"x": -59.5396, "y": 4.2725, "z": 8.0413, "label": 0, "cohort": "CPTAC", "pid": "C3N-02281"}, {"x": 4.2431, "y": -45.5451, "z": -23.3582, "label": 0, "cohort": "Stanford", "pid": "R01-024"}, {"x": -16.4269, "y": -16.6847, "z": -6.2628, "label": 0, "cohort": "Stanford", "pid": "R01-006"}, {"x": -15.7292, "y": 19.289, "z": -3.4255, "label": 1, "cohort": "Stanford", "pid": "R01-153"}, {"x": -33.0168, "y": 27.3421, "z": 4.6593, "label": 0, "cohort": "Stanford", "pid": "R01-032"}, {"x": -21.795, "y": -39.2496, "z": 18.246, "label": 1, "cohort": "Stanford", "pid": "R01-033"}, {"x": -45.8539, "y": -15.6364, "z": -29.2366, "label": 0, "cohort": "Stanford", "pid": "R01-034"}, {"x": 3.2322, "y": 33.8616, "z": -4.6003, "label": 1, "cohort": "Stanford", "pid": "R01-035"}, {"x": -46.7524, "y": -15.5406, "z": 10.9774, "label": 0, "cohort": "Stanford", "pid": "R01-037"}, {"x": -39.4246, "y": -6.4502, "z": 6.1292, "label": 0, "cohort": "Stanford", "pid": "R01-005"}, {"x": -62.2519, "y": -43.2648, "z": -41.271, "label": 1, "cohort": "Stanford", "pid": "R01-147"}, {"x": 16.863, "y": 5.6433, "z": -33.1192, "label": 0, "cohort": "Stanford", "pid": "R01-051"}, {"x": -61.4354, "y": -56.8814, "z": -38.9055, "label": 0, "cohort": "Stanford", "pid": "R01-043"}, {"x": -29.5395, "y": 64.2498, "z": 55.4193, "label": 0, "cohort": "Stanford", "pid": "R01-028"}, {"x": -26.7713, "y": -63.3468, "z": 19.5728, "label": 0, "cohort": "Stanford", "pid": "R01-052"}, {"x": -142.5593, "y": -137.0332, "z": 16.2913, "label": 0, "cohort": "Stanford", "pid": "R01-056"}, {"x": -26.0727, "y": 75.3214, "z": 58.2348, "label": 0, "cohort": "Stanford", "pid": "R01-057"}, {"x": -4.8255, "y": 18.5648, "z": 16.1107, "label": 0, "cohort": "Stanford", "pid": "R01-059"}, {"x": -38.0543, "y": 34.8919, "z": 24.4688, "label": 1, "cohort": "Stanford", "pid": "R01-060"}, {"x": 38.9529, "y": -34.1652, "z": -34.6589, "label": 0, "cohort": "Stanford", "pid": "R01-061"}, {"x": -26.6939, "y": 67.4331, "z": 29.7676, "label": 0, "cohort": "Stanford", "pid": "R01-062"}, {"x": -9.8283, "y": 18.9181, "z": 24.1908, "label": 0, "cohort": "Stanford", "pid": "R01-063"}, {"x": -20.1488, "y": 56.1432, "z": 10.3273, "label": 1, "cohort": "Stanford", "pid": "R01-066"}, {"x": -10.2767, "y": -7.3133, "z": -20.199, "label": 0, "cohort": "Stanford", "pid": "R01-067"}, {"x": -15.1936, "y": 23.3218, "z": 46.4488, "label": 1, "cohort": "Stanford", "pid": "R01-068"}, {"x": -28.0432, "y": 78.6615, "z": 57.4309, "label": 0, "cohort": "Stanford", "pid": "R01-072"}, {"x": -28.6874, "y": 80.4541, "z": 58.7326, "label": 0, "cohort": "Stanford", "pid": "R01-080"}, {"x": 0.1604, "y": 9.3194, "z": 1.9183, "label": 0, "cohort": "Stanford", "pid": "R01-081"}, {"x": 10.1143, "y": 20.5727, "z": 3.9073, "label": 0, "cohort": "Stanford", "pid": "R01-154"}, {"x": 1.6078, "y": -7.8913, "z": 17.8132, "label": 0, "cohort": "Stanford", "pid": "R01-083"}, {"x": -38.1282, "y": -62.1197, "z": -3.6107, "label": 0, "cohort": "Stanford", "pid": "R01-084"}, {"x": -38.02, "y": 18.8172, "z": -13.4085, "label": 0, "cohort": "Stanford", "pid": "R01-048"}, {"x": 30.766, "y": -3.3989, "z": -45.1018, "label": 1, "cohort": "Stanford", "pid": "R01-077"}, {"x": 3.2632, "y": 12.4236, "z": -23.8775, "label": 1, "cohort": "Stanford", "pid": "R01-078"}, {"x": 29.4318, "y": -2.7015, "z": -36.5922, "label": 0, "cohort": "Stanford", "pid": "R01-003"}, {"x": 11.9826, "y": 50.6883, "z": -16.0924, "label": 0, "cohort": "Stanford", "pid": "R01-012"}, {"x": -9.9752, "y": 8.6523, "z": 14.0222, "label": 0, "cohort": "Stanford", "pid": "R01-013"}, {"x": 4.0221, "y": -3.246, "z": -23.3813, "label": 0, "cohort": "Stanford", "pid": "R01-015"}, {"x": -12.7154, "y": -46.882, "z": 4.2357, "label": 0, "cohort": "Stanford", "pid": "R01-016"}, {"x": -11.1904, "y": 28.6887, "z": -15.0774, "label": 0, "cohort": "Stanford", "pid": "R01-017"}, {"x": -22.8645, "y": -18.6695, "z": -46.4633, "label": 0, "cohort": "Stanford", "pid": "R01-021"}, {"x": 21.5672, "y": 11.361, "z": -48.2636, "label": 0, "cohort": "Stanford", "pid": "R01-022"}, {"x": -34.0022, "y": -62.2108, "z": -33.2068, "label": 0, "cohort": "Stanford", "pid": "R01-026"}, {"x": -8.3149, "y": 22.2799, "z": -4.6499, "label": 0, "cohort": "Stanford", "pid": "R01-014"}, {"x": -23.3827, "y": 13.1933, "z": -0.9952, "label": 0, "cohort": "Stanford", "pid": "R01-160"}, {"x": -45.7986, "y": -5.5572, "z": -18.207, "label": 1, "cohort": "Stanford", "pid": "R01-054"}, {"x": -20.9574, "y": 10.7858, "z": -34.762, "label": 0, "cohort": "Stanford", "pid": "R01-076"}, {"x": 13.9026, "y": -21.5213, "z": -27.2393, "label": 1, "cohort": "Stanford", "pid": "R01-148"}, {"x": 10.3585, "y": -12.3726, "z": 47.4616, "label": 0, "cohort": "Stanford", "pid": "R01-149"}, {"x": 12.7962, "y": -0.2471, "z": -65.0713, "label": 0, "cohort": "Stanford", "pid": "R01-079"}, {"x": -51.442, "y": 14.0963, "z": -16.1918, "label": 0, "cohort": "Stanford", "pid": "R01-089"}, {"x": -50.7599, "y": 64.5028, "z": 30.2807, "label": 0, "cohort": "Stanford", "pid": "R01-151"}, {"x": 24.3073, "y": -0.7362, "z": -63.3988, "label": 0, "cohort": "Stanford", "pid": "R01-152"}, {"x": 10.2112, "y": -36.7155, "z": -23.8368, "label": 1, "cohort": "Stanford", "pid": "R01-091"}, {"x": -135.4621, "y": -93.7184, "z": 1.8059, "label": 0, "cohort": "Stanford", "pid": "R01-094"}, {"x": -1.099, "y": -50.9061, "z": 11.8383, "label": 1, "cohort": "Stanford", "pid": "R01-096"}, {"x": -101.6767, "y": -104.2559, "z": 28.2073, "label": 0, "cohort": "Stanford", "pid": "R01-097"}, {"x": -15.5133, "y": -16.5906, "z": -41.774, "label": 0, "cohort": "Stanford", "pid": "R01-098"}, {"x": 7.1139, "y": -0.1807, "z": -22.8638, "label": 1, "cohort": "Stanford", "pid": "R01-099"}, {"x": 8.0648, "y": 34.6513, "z": -3.4851, "label": 0, "cohort": "Stanford", "pid": "R01-100"}, {"x": 58.2471, "y": -6.7101, "z": -5.5664, "label": 1, "cohort": "Stanford", "pid": "R01-103"}, {"x": -9.0771, "y": 56.8772, "z": 15.4343, "label": 0, "cohort": "Stanford", "pid": "R01-104"}, {"x": 29.4614, "y": 10.2212, "z": -17.0041, "label": 0, "cohort": "Stanford", "pid": "R01-105"}, {"x": 32.131, "y": -42.7131, "z": 37.386, "label": 0, "cohort": "Stanford", "pid": "R01-106"}, {"x": -21.1813, "y": 37.9802, "z": 2.526, "label": 0, "cohort": "Stanford", "pid": "R01-107"}, {"x": -26.0949, "y": 42.9576, "z": 20.4241, "label": 0, "cohort": "Stanford", "pid": "R01-109"}, {"x": 27.5431, "y": 23.8459, "z": -3.0279, "label": 0, "cohort": "Stanford", "pid": "R01-110"}, {"x": 53.839, "y": -12.9914, "z": -24.4535, "label": 0, "cohort": "Stanford", "pid": "R01-111"}, {"x": 18.4294, "y": 40.5592, "z": 2.0598, "label": 0, "cohort": "Stanford", "pid": "R01-112"}, {"x": 5.8889, "y": 37.942, "z": -19.5135, "label": 0, "cohort": "Stanford", "pid": "R01-113"}, {"x": 7.6571, "y": 73.2607, "z": -1.1263, "label": 0, "cohort": "Stanford", "pid": "R01-115"}, {"x": 4.3347, "y": 39.8889, "z": -2.0487, "label": 0, "cohort": "Stanford", "pid": "R01-116"}, {"x": 57.5266, "y": -4.374, "z": -6.0356, "label": 0, "cohort": "Stanford", "pid": "R01-117"}, {"x": 20.9043, "y": 50.1062, "z": -16.4574, "label": 0, "cohort": "Stanford", "pid": "R01-120"}, {"x": -0.618, "y": 40.0423, "z": 4.9781, "label": 0, "cohort": "Stanford", "pid": "R01-122"}, {"x": 29.8765, "y": -14.6169, "z": -9.8688, "label": 0, "cohort": "Stanford", "pid": "R01-123"}, {"x": -1.6926, "y": 47.6693, "z": -13.328, "label": 0, "cohort": "Stanford", "pid": "R01-125"}, {"x": 24.4432, "y": 32.2925, "z": -44.5611, "label": 0, "cohort": "Stanford", "pid": "R01-126"}, {"x": -2.0722, "y": 14.493, "z": 6.2284, "label": 0, "cohort": "Stanford", "pid": "R01-127"}, {"x": 20.001, "y": 4.2423, "z": -16.6365, "label": 0, "cohort": "Stanford", "pid": "R01-128"}, {"x": 7.4335, "y": -5.6411, "z": 0.2772, "label": 0, "cohort": "Stanford", "pid": "R01-129"}, {"x": 9.381, "y": 0.3227, "z": -14.9045, "label": 0, "cohort": "Stanford", "pid": "R01-130"}, {"x": 8.6018, "y": 10.1993, "z": -16.4255, "label": 0, "cohort": "Stanford", "pid": "R01-131"}, {"x": 25.5209, "y": -19.0488, "z": -30.8167, "label": 0, "cohort": "Stanford", "pid": "R01-132"}, {"x": -3.8167, "y": 33.4103, "z": -7.7058, "label": 1, "cohort": "Stanford", "pid": "R01-133"}, {"x": -7.7624, "y": -65.12, "z": 17.3322, "label": 0, "cohort": "Stanford", "pid": "R01-134"}, {"x": 1.8738, "y": 31.0466, "z": -4.1288, "label": 0, "cohort": "Stanford", "pid": "R01-136"}, {"x": 45.0624, "y": -1.5503, "z": -15.9025, "label": 0, "cohort": "Stanford", "pid": "R01-137"}, {"x": 13.8662, "y": 20.7324, "z": 11.1042, "label": 0, "cohort": "Stanford", "pid": "R01-138"}, {"x": 8.0409, "y": 6.4793, "z": -12.1814, "label": 0, "cohort": "Stanford", "pid": "R01-139"}, {"x": 11.8094, "y": 27.2443, "z": 5.6763, "label": 1, "cohort": "Stanford", "pid": "R01-140"}, {"x": -3.9959, "y": 42.4029, "z": 5.168, "label": 0, "cohort": "Stanford", "pid": "R01-141"}, {"x": 35.9117, "y": 5.1574, "z": -19.4333, "label": 0, "cohort": "Stanford", "pid": "R01-142"}, {"x": 29.2367, "y": 11.9358, "z": -5.2505, "label": 0, "cohort": "Stanford", "pid": "R01-144"}, {"x": 18.6705, "y": 21.5778, "z": -6.3562, "label": 0, "cohort": "Stanford", "pid": "R01-145"}, {"x": 10.3488, "y": 12.3882, "z": 17.7142, "label": 1, "cohort": "Stanford", "pid": "R01-146"}, {"x": -62.3527, "y": -39.6893, "z": 26.0572, "label": 0, "cohort": "CPTAC", "pid": "C3N-04173"}, {"x": 65.6187, "y": -45.2242, "z": 69.9095, "label": 0, "cohort": "CPTAC", "pid": "C3L-00893"}, {"x": 39.3539, "y": -67.0851, "z": 51.9203, "label": 0, "cohort": "CPTAC", "pid": "C3N-00737"}, {"x": 33.9516, "y": -57.823, "z": 78.9981, "label": 0, "cohort": "CPTAC", "pid": "C3N-03222"}, {"x": 61.1611, "y": -54.3082, "z": 61.3158, "label": 0, "cohort": "CPTAC", "pid": "C3N-02973"}, {"x": 34.6246, "y": -42.6354, "z": 77.6143, "label": 0, "cohort": "CPTAC", "pid": "C3L-00263"}, {"x": 123.9199, "y": -35.3945, "z": 47.2997, "label": 0, "cohort": "CPTAC", "pid": "C3N-02950"}, {"x": -42.6976, "y": 18.5316, "z": -16.2465, "label": 1, "cohort": "CPTAC", "pid": "C3N-02282"}, {"x": 58.2118, "y": -59.2981, "z": 61.2874, "label": 0, "cohort": "CPTAC", "pid": "C3N-03233"}, {"x": 87.3502, "y": -28.6929, "z": 42.5206, "label": 0, "cohort": "CPTAC", "pid": "C3N-03765"}, {"x": -12.2538, "y": 7.0481, "z": -7.3246, "label": 0, "cohort": "CPTAC", "pid": "C3N-02721"}, {"x": 46.5086, "y": -36.1505, "z": 43.1007, "label": 0, "cohort": "CPTAC", "pid": "C3N-02672"}, {"x": 85.1252, "y": -14.0256, "z": 34.6157, "label": 0, "cohort": "CPTAC", "pid": "C3N-03420"}, {"x": 119.8104, "y": -29.5163, "z": 54.644, "label": 0, "cohort": "CPTAC", "pid": "C3L-02508"}, {"x": 105.7821, "y": -41.2477, "z": 44.788, "label": 0, "cohort": "CPTAC", "pid": "C3N-00199"}];
+const canvas = document.getElementById('c');
+const tooltip = document.getElementById('tooltip');
+let W = window.innerWidth, H = window.innerHeight;
+canvas.width = W; canvas.height = H;
+const ctx = canvas.getContext('2d');
+
+// Camera state
+let rotX = 0.3, rotY = 0.6, zoom = 180;
+let dragging = false, lastX, lastY;
+
+canvas.addEventListener('mousedown', e => { dragging=true; lastX=e.clientX; lastY=e.clientY; });
+window.addEventListener('mouseup', () => dragging=false);
+window.addEventListener('mousemove', e => {
+  if(dragging) { rotY += (e.clientX-lastX)*0.01; rotX += (e.clientY-lastY)*0.01; lastX=e.clientX; lastY=e.clientY; draw(); }
+  else { checkHover(e.clientX, e.clientY); }
+});
+canvas.addEventListener('wheel', e => { zoom -= e.deltaY*0.3; zoom=Math.max(60,Math.min(500,zoom)); draw(); });
+window.addEventListener('resize', () => { W=window.innerWidth; H=window.innerHeight; canvas.width=W; canvas.height=H; draw(); });
+
+function project(x,y,z) {
+  const cosX=Math.cos(rotX), sinX=Math.sin(rotX);
+  const cosY=Math.cos(rotY), sinY=Math.sin(rotY);
+  let y2 = y*cosX - z*sinX, z2 = y*sinX + z*cosX;
+  let x2 = x*cosY + z2*sinY; z2 = -x*sinY + z2*cosY;
+  const fov=zoom, d=3.5; const s=fov/(d+z2*0.04);
+  return { sx: W/2+x2*s, sy: H/2-y2*s, depth: z2 };
+}
+
+// normalise coords
+const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y), zs=pts.map(p=>p.z);
+const sc = 1/Math.max(...xs.map(Math.abs),...ys.map(Math.abs),...zs.map(Math.abs));
+
+let projected = [];
+function draw() {
+  ctx.fillStyle='#0f1117'; ctx.fillRect(0,0,W,H);
+  projected = pts.map((p,i) => ({...project(p.x*sc,p.y*sc,p.z*sc), i}));
+  projected.sort((a,b)=>a.depth-b.depth);
+  for(const {sx,sy,i} of projected) {
+    const p=pts[i];
+    const col = p.label===1 ? '#e74c3c' : '#3498db';
+    ctx.beginPath(); ctx.arc(sx,sy,4,0,Math.PI*2);
+    ctx.fillStyle=col+'cc'; ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=0.5; ctx.stroke();
+  }
+}
+
+function checkHover(mx,my) {
+  let best=null, bd=16;
+  for(const {sx,sy,i} of projected) {
+    const d=Math.hypot(sx-mx,sy-my);
+    if(d<bd){ bd=d; best=i; }
+  }
+  if(best!==null) {
+    const p=pts[best];
+    const stg=p.label===1?'Stage III/IV':'Stage I/II';
+    tooltip.style.display='block';
+    tooltip.style.left=(mx+12)+'px'; tooltip.style.top=(my-10)+'px';
+    tooltip.innerHTML=`<b>${p.pid}</b><br>${stg}<br>${p.cohort}`;
+  } else {
+    tooltip.style.display='none';
+  }
+}
+
+draw();
+</script>
+</body>
+</html>

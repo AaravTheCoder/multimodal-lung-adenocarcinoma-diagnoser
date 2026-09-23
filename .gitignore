@@ -1,0 +1,58 @@
+# Patient data — excluded for privacy
+real_patient_data.csv
+combined_patient_data.csv
+processed_patient_data.csv
+new_cptac_patients.csv
+clinical.tsv
+clinical_manifest.csv
+cptac_luad_clinical.csv
+stanford_clinical.csv
+tcga17_clinical.csv
+NSCLCR01Radiogenomic_DATA_LABELS_2018-05-22_1500-shifted.csv
+MULTIMODAL_PATIENTS.csv
+
+# Raw genomic data
+genomic_matrix.csv
+combat_corrected_matrix.npy
+combat_patient_ids.npy
+compressed_features.csv
+GSE103584_R01_NSCLC_RNAseq.txt.gz
+
+# Patient imaging — DICOM and processed CT
+tcia_raw_dicom/
+cptac_tcia_raw_dicom/
+stanford_tcia_raw_dicom/
+new_cptac_ct_dicom/
+lung_images/
+lung_scans/
+real_lung_images/
+retinal_images/
+processed_ct_images/
+
+# Genomic embeddings (patient-derived tensors)
+genomic_embeddings/
+real_genomic_embeddings/
+real_genomics/
+new_cptac_genomics/
+
+# Model weights (large binaries / third-party)
+ResNet18.pth
+RadiologyNET_ResNet18.tar.gz
+best_model.pt
+
+# TCIA manifests and GDC client
+*.tcia
+gdc-client
+gdc_manifest.*.txt
+new_cptac_gdc_manifest.txt
+new_cptac_rna_manifest.csv
+cptac_uuid_to_patient.csv
+
+# Training logs (large)
+training_output*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
